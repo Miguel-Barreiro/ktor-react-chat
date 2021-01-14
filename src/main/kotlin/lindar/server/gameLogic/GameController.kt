@@ -1,37 +1,90 @@
 package lindar.server.gameLogic
 
+import io.ktor.util.*
 import lindar.server.connection.*
 import lindar.server.connection.ConnectionController
+import lindar.server.gameLogic.database.AddSafePick
 import lindar.server.gameLogic.database.DatabaseConnection
 import lindar.server.gameLogic.database.GetGameData
-import java.sql.ResultSet
+import java.lang.Exception
+import java.sql.Date
 
+class NotLogedException : Exception( "User had to be logged in to perform this action")
 
 private const val TRIES_PER_DAY = 6
 
 
-public fun HandleReceivedMessage(login: LoginMessage, connection: ConnectionController, databaseConnection: DatabaseConnection){
+public fun HandleReceivedMessage(login: LoginBody, connection: ConnectionController, databaseConnection: DatabaseConnection){
 
-    val gameData = GetGameData(login.BODY.PlayerId, databaseConnection)
+    connection.PlayerId = login.PlayerId
 
-    val message = CreateStartGameDataMessage(gameData)
+    val (startingDate, safePicks) = GetGameData(login.PlayerId, databaseConnection)
+
+    val message = CreateStartGameDataMessage(startingDate, safePicks)
     connection.SendMessage(message)
 }
 
 
-public fun HandleReceivedMessage(message: PickSafeMessage, connection: ConnectionController, databaseConnection: DatabaseConnection){
+public fun HandleReceivedMessage(message: PickSafeBody, connection: ConnectionController, databaseConnection: DatabaseConnection){
+    if(connection.PlayerId.isNullOrEmpty()) {
+        throw NotLogedException() 
+    }
+    val (resultCode,  picksLeft, safePick) = AddSafePick(message.SafeId, connection.PlayerId.orEmpty(), databaseConnection)
 
-//    val gameData = GetGameData(login.name, databaseConnection)
-//
-//    val message = CreateStartGameDataMessage(gameData)
-//    connection.SendMessage(message)
-//
-//    send("You said: $receivedText")
+    when(resultCode){
+        0-> {
+            /* picking sucessful*/
+            var resultMessage = PickSafeResponseMessage(
+                PickSafeResponseBody(
+                    listOf( safePick),
+                    picksLeft,
+                )
+            )
+            connection.SendMessage(resultMessage)
+        }
+        else -> {
+            /* 1: has picked the same one before*/
+            /* 2: has reached max picks*/
 
+            connection.SendMessage(
+                PickSafeFailMessage(PickSafeFailBody(resultCode))
+            )
+        }
+    }
 }
 
 
-fun CreateStartGameDataMessage(resultSet: ResultSet?): GameDataMessage {
+private fun CreateStartGameDataMessage( startingDate: Date, safePicks: List<SafePick> ): GameDataMessage {
+    
+    val rewards = object {
+        var CROWN = 0
+        var EGG = 0
+        var JEWEL = 0
+        var AMULET = 0
+        var DAGGER = 0
+        var PAINTING = 0
+    }
+    val dayPicks = arrayOf(0, 0, 0, 0, 0, 0, 0)
+
+    val now = System.currentTimeMillis()
+    val dayOfYear = Date(now).toLocalDate().dayOfYear
+    val startGameDay = startingDate.toLocalDate().dayOfYear
+    val currentDayNumber = dayOfYear - startGameDay
+
+    safePicks.forEach {
+        when(it.Inside){
+            "CROWN" -> rewards.CROWN++
+            "EGG" -> rewards.EGG++
+            "JEWEL" -> rewards.JEWEL++
+            "DAGGER" -> rewards.DAGGER++
+            "AMULET" -> rewards.AMULET++
+            "PAINTING" -> rewards.PAINTING++
+        }
+       if(it.PickDate!= null) { 
+           val pickDate : Date = it.PickDate as Date
+           dayPicks[ pickDate.toLocalDate().dayOfYear - startGameDay]++
+       }
+    }
 
     //MISSED, PLAYED, CURRENT, FUTURE
     fun getDayResult(numberDay : Int, currentDayNumber : Int, dayPicks : Array<Int>) : String{
@@ -43,33 +96,10 @@ fun CreateStartGameDataMessage(resultSet: ResultSet?): GameDataMessage {
         }
     }
     
-    val rewards = object {
-        var CROWN = 0
-        var EGG = 0
-        var JEWEL = 0
-        var AMULET = 0
-        var DAGGER = 0
-        var PAINTING = 0
-    }
-
-    val dayPicks = arrayOf(0, 0, 0, 0, 0, 0, 0)
-    val currentDayNumber = 0
-
     val dayResults: Array<String> = arrayOf("", "", "", "", "", "", "")
     for (i in 0..6)
         dayResults[i] = getDayResult(i, currentDayNumber, dayPicks)
-
-
-    val days = Days(
-        dayResults[0],
-        dayResults[1],
-        dayResults[2],
-        dayResults[3],
-        dayResults[4],
-        dayResults[5],
-        dayResults[6],
-    )
-
+    
     val prizes: List<Prize> = listOf(
         Prize(
             objectType = "CROWN",
@@ -126,24 +156,18 @@ fun CreateStartGameDataMessage(resultSet: ResultSet?): GameDataMessage {
             )
         ),
     )
-    val safePicks: List<SafePick> = emptyList()
-
-
-
-
-    if (resultSet != null) {
-        while (resultSet.next()) {
-//            val result = resultSet.getString("result")
-            println(resultSet.getArray(1))
-        }
-    }
-    
-    
-    
     
     return GameDataMessage(
         BODY = GameDataBody(
-            days = days,
+            days = Days(
+                dayResults[0],
+                dayResults[1],
+                dayResults[2],
+                dayResults[3],
+                dayResults[4],
+                dayResults[5],
+                dayResults[6],
+            ),
             triesPerDay = TRIES_PER_DAY,
             currentTriesLeft = TRIES_PER_DAY - dayPicks[currentDayNumber],
             prizes = prizes,
@@ -152,10 +176,5 @@ fun CreateStartGameDataMessage(resultSet: ResultSet?): GameDataMessage {
     )
 
 
-
-
-
-
 }
-
 

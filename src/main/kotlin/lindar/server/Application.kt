@@ -6,6 +6,7 @@ import io.ktor.routing.*
 import io.ktor.websocket.*
 import lindar.server.connection.*
 import lindar.server.gameLogic.database.*
+import java.sql.SQLException
 import java.util.*
 import kotlin.collections.LinkedHashSet
 
@@ -15,15 +16,15 @@ fun main(args: Array<String>): Unit = io.ktor.server.netty.EngineMain.main(args)
 fun Application.module() {
     install(WebSockets)
 
-    val databaseConnection = CreateDatabaseConnection()
+    //TODO: we need to make this connection thread safe ( maybe even a pool of connections)
+    var databaseConnection = CreateDatabaseConnection()
     println("Database connected successfully")
     
     routing {
 
-        val connections = Collections.synchronizedSet<ConnectionController?>(LinkedHashSet())
-        
+        val connections = Collections.synchronizedSet<ConnectionController>(LinkedHashSet())
+
         webSocket("/DFG") {
-            send("You are connected!")
             println("New player connected")
             
             val connection = ConnectionController(this)
@@ -40,6 +41,10 @@ fun Application.module() {
                     connection.ProcessMessage(receivedText, databaseConnection)
                 }
 
+            }catch ( e: SQLException) {
+                CloseDatabaseConnection(databaseConnection)
+                CreateDatabaseConnection().also { databaseConnection = it }
+                
             }catch (e: Exception){
                 e.printStackTrace()
             }
